@@ -7,6 +7,7 @@
 import torch
 from torchvision import datasets,transforms,utils
 from torch.utils.data import Dataset,IterableDataset, ConcatDataset
+from diffusers import StableDiffusionImg2ImgPipeline
 from glob import glob
 import os
 import numpy as np
@@ -44,9 +45,27 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from degradations import degradation
 print(f"exist_bi: {exist_bi}")
 
+# Singleton class for Stable Diffusion pipeline
+class StableDiffusionSingleton:
+    _instance = None
+    
+    @classmethod
+    def get_pipeline(cls):
+        if cls._instance is None:
+            cls._instance = StableDiffusionImg2ImgPipeline.from_pretrained(
+                "runwayml/stable-diffusion-v1-5",
+                torch_dtype=torch.float16
+            ).to("cuda")
+        return cls._instance
+
+# Constants for Stable Diffusion parameters
+SD_PROMPT = "a realistic photo of a person"  # Generic prompt
+SD_STRENGTH = 0.01  # Very low to avoid altering content
+SD_GUIDANCE_SCALE = 1.0  # Low to limit changes
+
 
 class SBI_Dataset(Dataset):
-	def __init__(self,phase='train',image_size=224,n_frames=8, degradations = False, poisson = False, random_mask = False):
+	def __init__(self,phase='train',image_size=224,n_frames=8, degradations = False, poisson = False, random_mask = False, pg=0.0):
 		
 		assert phase in ['train','val','test']
 		
@@ -72,6 +91,7 @@ class SBI_Dataset(Dataset):
 		self.poisson = poisson
 		self.random_mask = random_mask
 		self.final_transforms = get_final_transforms()
+		self.pg = pg
 
 
 	def __len__(self):
@@ -110,8 +130,15 @@ class SBI_Dataset(Dataset):
 				#Get img landmarks and bbox for self-blending		
 				img,landmark,bbox,__=crop_face(img,landmark,bbox,margin=True,crop_by_bbox=False)
 
-				#Get self blending pristine and fake 
-				img_r,img_f,mask_f=self.self_blending(img.copy(),landmark.copy(), self.poisson, self.random_mask)
+				#Get self blending pristine and fake (change for stable and gan)
+				#img_r,img_f,mask_f=self.self_blending(img.copy(),landmark.copy(), self.poisson, self.random_mask)
+				img_r = img.copy()
+
+				if self.phase == 'train' and np.random.rand() < self.pg:
+					img_f = self.apply_stable_or_gan(img.copy())
+					mask_f = None
+				else:
+					img_r,img_f,mask_f=self.self_blending(img.copy(),landmark.copy(), self.poisson, self.random_mask)
 				
 				#Augment during training
 				if self.phase=='train' and not self.degradations:
@@ -231,6 +258,26 @@ class SBI_Dataset(Dataset):
 
 		return img,img_blended,mask
 	
+	def apply_stable_diffusion(self, img):
+		with torch.no_grad():
+			result = StableDiffusionSingleton.get_pipeline()(
+				prompt=SD_PROMPT,
+				image=img,
+				strength=SD_STRENGTH,
+				guidance_scale=SD_GUIDANCE_SCALE,
+				num_inference_steps=50
+			).images[0]
+		return result
+	
+	def apply_stylegan(self, img):
+		return img
+
+	def apply_stable_or_gan(self, img):
+		if np.random.rand() < 0.5:
+			return self.apply_stable_diffusion(img)
+		else:
+			return self.apply_stylegan(img)
+	
 	@staticmethod
 	def reorder_landmark(landmark):
 		landmark_add=np.zeros((13,2))
@@ -344,7 +391,7 @@ class SBI_Custom_Dataset(SBI_Dataset):
 			print(f'SBI_SIM_MV2({phase}): {len(image_list_sim_mv2)}')
 			self.image_list += image_list_sim_mv2
 
-	def __init__(self, phase='train', datasets = ['FF'], image_size=224,n_frames=8, degradations = False, poisson = False, random_mask = False, crop_mode = 'retina'):
+	def __init__(self, phase='train', datasets = ['FF'], image_size=224,n_frames=8, degradations = False, poisson = False, random_mask = False, crop_mode = 'retina', pg=0.0):
 		path_lm='/landmarks/' 
 		self.path_lm=path_lm
 		self.crop_mode = crop_mode
@@ -358,6 +405,7 @@ class SBI_Custom_Dataset(SBI_Dataset):
 		self.poisson = poisson
 		self.random_mask = random_mask
 		self.final_transforms = get_final_transforms()
+		self.pg = pg
 	def __getitem__(self,idx):
 		flag=True
 		while flag:
