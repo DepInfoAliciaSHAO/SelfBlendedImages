@@ -132,14 +132,8 @@ class SBI_Dataset(Dataset):
 
 				#Get self blending pristine and fake (change for stable and gan)
 				#img_r,img_f,mask_f=self.self_blending(img.copy(),landmark.copy(), self.poisson, self.random_mask)
-				img_r = img.copy()
+				img_r,img_f,mask_f=self.self_blending(img.copy(),landmark.copy(), self.poisson, self.random_mask, self.pg)
 
-				if self.phase == 'train' and np.random.rand() < self.pg:
-					img_f = self.apply_stable_or_gan(img.copy())
-					mask_f = None
-				else:
-					img_r,img_f,mask_f=self.self_blending(img.copy(),landmark.copy(), self.poisson, self.random_mask)
-				
 				#Augment during training
 				if self.phase=='train' and not self.degradations:
 					transformed=self.transforms(image=img_f.astype('uint8'),image1=img_r.astype('uint8'))
@@ -228,7 +222,7 @@ class SBI_Dataset(Dataset):
 		return img,mask
 
 		
-	def self_blending(self,img,landmark, poisson, random_mask):
+	def self_blending(self,img,landmark, poisson, random_mask, pg):
 		p_p = 0.5
 
 		H,W=len(img),len(img[0])
@@ -246,9 +240,15 @@ class SBI_Dataset(Dataset):
 
 		source = img.copy()
 		if np.random.rand()<0.5:
-			source = self.source_transforms(image=source.astype(np.uint8))['image']
+			if np.random.rand()<pg:
+				source = self.apply_stable_or_gan(source.copy())
+			else:
+				source = self.source_transforms(image=source.astype(np.uint8))['image']
 		else:
-			img = self.source_transforms(image=img.astype(np.uint8))['image']
+			if np.random.rand()<pg:
+				img = self.apply_stable_or_gan(img.copy())
+			else:
+				img = self.source_transforms(image=img.astype(np.uint8))['image']
 
 		source, mask = self.randaffine(source,mask)
 
